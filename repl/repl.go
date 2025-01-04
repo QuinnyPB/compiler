@@ -40,7 +40,7 @@ func Start(in io.Reader, out io.Writer) {
 		comp := compiler.NewWithState(symbolTable, constants)
 		err := comp.Compile(program)
 		if err != nil {
-			fmt.Fprintf(out, "Woops! Compilation failed:\n %s\n", err)
+			fmt.Fprintf(out, "Error: Compilation failed:\n %s\n", err)
 			continue
 		}
 
@@ -51,7 +51,7 @@ func Start(in io.Reader, out io.Writer) {
 
 		err = machine.Run()
 		if err != nil {
-			fmt.Fprintf(out, "Woops! Executing bytecode failed:\n %s\n", err)
+			fmt.Fprintf(out, "Error: Executing bytecode failed:\n %s\n", err)
 			continue
 		}
 
@@ -61,22 +61,8 @@ func Start(in io.Reader, out io.Writer) {
 	}
 }
 
-const MONKEY_FACE = `            __,__
-   .--.  .-"     "-.  .--.
-  / .. \/  .-. .-.  \/ .. \
- | |  '|  /   Y   \  |'  | |
- | \   \  \ 0 | 0 /  /   / |
-  \ '- ,\.-"""""""-./, -' /
-   ''-' /_   ^ ^   _\ '-''
-       |  \._   _./  |
-       \   \ '~' /   /
-        '._ '-=-' _.'
-           '-----'
-`
-
 func printParserErrors(out io.Writer, errors []string) {
-	io.WriteString(out, MONKEY_FACE)
-	io.WriteString(out, "Woops! We ran into some monkey business here!\n")
+	io.WriteString(out, "Program ran into an error while compiling!\n")
 	io.WriteString(out, " parser errors:\n")
 	for _, msg := range errors {
 		io.WriteString(out, "\t"+msg+"\n")
