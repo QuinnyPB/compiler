@@ -9,30 +9,35 @@ import (
 )
 
 type Compiler struct {
-	instructions 				code.Instructions
-	constants    				[]object.Object
+	instructions code.Instructions
+	constants    []object.Object
 
-	lastInstruction 		EmittedInstruction
+	lastInstruction     EmittedInstruction
 	previousInstruction EmittedInstruction
 
-	symbolTable 				*SymbolTable	
+	symbolTable *SymbolTable
 
-	scopes 							[]CompilationScope
-	scopeIndex 					int
+	scopes     []CompilationScope
+	scopeIndex int
 }
 
 func New() *Compiler {
 	mainScope := CompilationScope{
-		instructions: 				code.Instructions{},
-		lastInstruction: 			EmittedInstruction{},
-		previousInstruction: 	EmittedInstruction{},
+		instructions:        code.Instructions{},
+		lastInstruction:     EmittedInstruction{},
+		previousInstruction: EmittedInstruction{},
 	}
-	
+
+	symbolTable := NewSymbolTable()
+	for i, v := range object.Builtins {
+		symbolTable.DefineBuiltin(i, v.Name)
+	}
+
 	return &Compiler{
-		constants:    []object.Object{},
-		symbolTable: 	NewSymbolTable(),
-		scopes: 			[]CompilationScope{mainScope},
-		scopeIndex: 	0,
+		constants:   []object.Object{},
+		symbolTable: symbolTable,
+		scopes:      []CompilationScope{mainScope},
+		scopeIndex:  0,
 	}
 }
 
@@ -66,9 +71,9 @@ func (c *Compiler) Compile(node ast.Node) error {
 		if err != nil {
 			return err
 		}
-		
+
 		c.emit(code.OpReturnValue)
-		
+
 	case *ast.InfixExpression:
 		if node.Operator == "<" {
 			err := c.Compile(node.Right)
@@ -83,7 +88,7 @@ func (c *Compiler) Compile(node ast.Node) error {
 			c.emit(code.OpGreaterThan)
 			return nil
 		}
-		
+
 		err := c.Compile(node.Left)
 		if err != nil {
 			return err
@@ -136,7 +141,6 @@ func (c *Compiler) Compile(node ast.Node) error {
 	case *ast.StringLiteral:
 		str := &object.String{Value: node.Value}
 		c.emit(code.OpConstant, c.addConstant(str))
-		
 
 	case *ast.Boolean:
 		if node.Value {
@@ -178,10 +182,18 @@ func (c *Compiler) Compile(node ast.Node) error {
 		}
 
 		c.emit(code.OpHash, len(node.Pairs)*2)
-		
+
 	case *ast.FunctionLiteral:
 		c.enterScope()
-		
+
+		if node.Name != "" {
+			c.symbolTable.DefineFunctionName(node.Name)
+		}
+
+		for _, p := range node.Parameters {
+			c.symbolTable.Define(p.Value)
+		}
+
 		err := c.Compile(node.Body)
 		if err != nil {
 			return err
@@ -194,11 +206,23 @@ func (c *Compiler) Compile(node ast.Node) error {
 			c.emit(code.OpReturn)
 		}
 
+		freeSymbols := c.symbolTable.FreeSymbols
+		numLocals := c.symbolTable.numDefinitions // records number of local bindings/variables created in function
 		instructions := c.leaveScope()
 
-		compiledFn := &object.CompiledFunction{Instructions: instructions}
-		c.emit(code.OpConstant, c.addConstant(compiledFn))
-	
+		for _, s := range freeSymbols {
+			c.loadSymbols(s)
+		}
+
+		compiledFn := &object.CompiledFunction{
+			Instructions:  instructions,
+			NumLocals:     numLocals,
+			NumParameters: len(node.Parameters),
+		}
+
+		fnIndex := c.addConstant(compiledFn)
+		c.emit(code.OpClosure, fnIndex, len(freeSymbols))
+
 	case *ast.IfExpression:
 		err := c.Compile(node.Condition)
 		if err != nil {
@@ -219,8 +243,8 @@ func (c *Compiler) Compile(node ast.Node) error {
 		}
 
 		// changes value of JumpNotTruthy's jump value after evaluating consequence
-		// to next instruction after Consequence statement 
-		jumpPos := c.emit(code.OpJump, 9999)	
+		// to next instruction after Consequence statement
+		jumpPos := c.emit(code.OpJump, 9999)
 		afterConsequencePos := len(c.currentInstructions())
 		c.changeOperand(jumpNotTruthyPos, afterConsequencePos)
 
@@ -250,12 +274,17 @@ func (c *Compiler) Compile(node ast.Node) error {
 		}
 
 	case *ast.LetStatement:
+		symbol := c.symbolTable.Define(node.Name.Value)
 		err := c.Compile(node.Value)
 		if err != nil {
 			return err
 		}
-		symbol := c.symbolTable.Define(node.Name.Value)
-		c.emit(code.OpSetGlobal, symbol.Index)
+
+		if symbol.Scope == GlobalScope {
+			c.emit(code.OpSetGlobal, symbol.Index)
+		} else {
+			c.emit(code.OpSetLocal, symbol.Index)
+		}
 
 	case *ast.Identifier:
 		symbol, ok := c.symbolTable.Resolve(node.Value)
@@ -263,8 +292,7 @@ func (c *Compiler) Compile(node ast.Node) error {
 			return fmt.Errorf("undefined variable %s", node.Value)
 		}
 
-		c.emit(code.OpGetGlobal, symbol.Index)
-		
+		c.loadSymbols(symbol)
 
 	case *ast.IndexExpression:
 		err := c.Compile(node.Left)
@@ -277,7 +305,7 @@ func (c *Compiler) Compile(node ast.Node) error {
 			return err
 		}
 
-		c.emit(code.OpIndex)		
+		c.emit(code.OpIndex)
 
 	case *ast.CallExpression:
 		err := c.Compile(node.Function)
@@ -285,7 +313,14 @@ func (c *Compiler) Compile(node ast.Node) error {
 			return err
 		}
 
-		c.emit(code.OpCall)
+		for _, a := range node.Arguments {
+			err := c.Compile(a)
+			if err != nil {
+				return err
+			}
+		}
+
+		c.emit(code.OpCall, len(node.Arguments))
 	}
 
 	return nil
@@ -297,7 +332,7 @@ func (c *Compiler) Compile(node ast.Node) error {
 func (c *Compiler) Bytecode() *Bytecode {
 	return &Bytecode{
 		Instructions: c.currentInstructions(), // compiled instructions generated so far
-		Constants:    c.constants, // compiled constants generated
+		Constants:    c.constants,             // compiled constants generated
 	}
 }
 
@@ -313,7 +348,7 @@ func (c *Compiler) emit(op code.Opcode, operands ...int) int {
 	pos := c.addInstruction(ins)
 
 	c.setLastInstruction(op, pos)
-	
+
 	return pos
 }
 
@@ -323,7 +358,7 @@ func (c *Compiler) addInstruction(ins []byte) int {
 	updatedInstructions := append(c.currentInstructions(), ins...)
 
 	c.scopes[c.scopeIndex].instructions = updatedInstructions
-	
+
 	return posNewInstruction
 }
 
@@ -356,7 +391,7 @@ func (c *Compiler) removeLastPop() {
 
 func (c *Compiler) replaceInstruction(pos int, newInstruction []byte) {
 	ins := c.currentInstructions()
-	
+
 	for i := 0; i < len(newInstruction); i++ {
 		ins[pos+i] = newInstruction[i]
 	}
@@ -384,11 +419,12 @@ func (c *Compiler) currentInstructions() code.Instructions {
 // enters into a new scope (e.g. a function is being evaluated)
 func (c *Compiler) enterScope() {
 	scope := CompilationScope{
-		instructions: 				code.Instructions{},
-		lastInstruction: 			EmittedInstruction{},
-		previousInstruction: 	EmittedInstruction{},
+		instructions:        code.Instructions{},
+		lastInstruction:     EmittedInstruction{},
+		previousInstruction: EmittedInstruction{},
 	}
 	c.scopes = append(c.scopes, scope)
+	c.symbolTable = NewEnclosedSymbolTable(c.symbolTable)
 	c.scopeIndex++
 }
 
@@ -396,9 +432,25 @@ func (c *Compiler) enterScope() {
 func (c *Compiler) leaveScope() code.Instructions {
 	instructions := c.currentInstructions()
 	c.scopes = c.scopes[:len(c.scopes)-1]
+	c.symbolTable = c.symbolTable.Outer
 	c.scopeIndex--
 
 	return instructions
+}
+
+func (c *Compiler) loadSymbols(s Symbol) {
+	switch s.Scope {
+	case GlobalScope:
+		c.emit(code.OpGetGlobal, s.Index)
+	case LocalScope:
+		c.emit(code.OpGetLocal, s.Index)
+	case BuiltinScope:
+		c.emit(code.OpGetBuiltin, s.Index)
+	case FreeScope:
+		c.emit(code.OpGetFree, s.Index)
+	case FunctionScope:
+		c.emit(code.OpCurrentClosure)
+	}
 }
 
 type Bytecode struct {
@@ -407,12 +459,12 @@ type Bytecode struct {
 }
 
 type EmittedInstruction struct {
-	Opcode 		code.Opcode
-	Position 	int
+	Opcode   code.Opcode
+	Position int
 }
 
 type CompilationScope struct {
-	instructions 				code.Instructions
-	lastInstruction 		EmittedInstruction
+	instructions        code.Instructions
+	lastInstruction     EmittedInstruction
 	previousInstruction EmittedInstruction
 }

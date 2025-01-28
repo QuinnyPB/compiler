@@ -8,7 +8,7 @@ import (
 
 type Instructions []byte
 
-// turns slice of instructions into readable text 
+// turns slice of instructions into readable text
 func (ins Instructions) String() string {
 	var out bytes.Buffer
 
@@ -45,6 +45,8 @@ func (ins Instructions) fmtInstruction(def *Definition, operands []int) string {
 		return def.Name
 	case 1:
 		return fmt.Sprintf("%s %d", def.Name, operands[0])
+	case 2:
+		return fmt.Sprintf("%s %d %d", def.Name, operands[0], operands[1])
 	}
 
 	return fmt.Sprintf("ERROR: unhandled operandCount for %s\n", def.Name)
@@ -71,12 +73,18 @@ const (
 	OpNull
 	OpSetGlobal
 	OpGetGlobal
+	OpSetLocal
+	OpGetLocal
 	OpArray
 	OpHash
 	OpIndex
 	OpCall
 	OpReturnValue
 	OpReturn
+	OpGetBuiltin
+	OpClosure
+	OpCurrentClosure
+	OpGetFree
 )
 
 type Definition struct {
@@ -85,30 +93,37 @@ type Definition struct {
 }
 
 var definitions = map[Opcode]*Definition{
-	OpConstant: 			{"OpConstant", []int{2}},
-	OpAdd:      			{"OpAdd", []int{}},
-	OpSub:						{"OpSub", []int{}},
-	OpMul:						{"OpMul", []int{}},
-	OpDiv:						{"OpDiv", []int{}},
-	OpPop:						{"OpPop", []int{}},
-	OpTrue:						{"OpTrue", []int{}},
-	OpFalse:					{"OpFalse", []int{}},
-	OpEqual:					{"OpEqual", []int{}},
-	OpNotEqual:				{"OpNotEqual", []int{}},
-	OpGreaterThan:		{"OpGreaterThan", []int{}},
-	OpMinus:					{"OpMinus", []int{}},
-	OpBang:						{"OpBang", []int{}},
-	OpJumpNotTruthy: 	{"OpJumpNotTruthy", []int{2}},
-	OpJump: 					{"OpJump", []int{2}},
-	OpNull:						{"OpNull", []int{}},
-	OpSetGlobal:			{"OpSetGlobal", []int{2}},
-	OpGetGlobal:			{"OpGetGlobal", []int{2}},
-	OpArray:					{"OpArray", []int{2}},
-	OpHash:						{"OpHash", []int{2}},
-	OpIndex:					{"OpIndex", []int{}},
-	OpCall: 					{"OpCall", []int{}},
-	OpReturnValue: 		{"OpReturnValue", []int{}},
-	OpReturn: 				{"OpReturn", []int{}},
+	OpConstant:      {"OpConstant", []int{2}},
+	OpAdd:           {"OpAdd", []int{}},
+	OpSub:           {"OpSub", []int{}},
+	OpMul:           {"OpMul", []int{}},
+	OpDiv:           {"OpDiv", []int{}},
+	OpPop:           {"OpPop", []int{}},
+	OpTrue:          {"OpTrue", []int{}},
+	OpFalse:         {"OpFalse", []int{}},
+	OpEqual:         {"OpEqual", []int{}},
+	OpNotEqual:      {"OpNotEqual", []int{}},
+	OpGreaterThan:   {"OpGreaterThan", []int{}},
+	OpMinus:         {"OpMinus", []int{}},
+	OpBang:          {"OpBang", []int{}},
+	OpJumpNotTruthy: {"OpJumpNotTruthy", []int{2}},
+	OpJump:          {"OpJump", []int{2}},
+	OpNull:          {"OpNull", []int{}},
+	OpSetGlobal:     {"OpSetGlobal", []int{2}},
+	OpGetGlobal:     {"OpGetGlobal", []int{2}},
+	OpSetLocal:      {"OpSetLocal", []int{1}},
+	OpGetLocal:      {"OpGetLocal", []int{1}},
+	OpArray:         {"OpArray", []int{2}},
+	OpHash:          {"OpHash", []int{2}},
+	OpIndex:         {"OpIndex", []int{}},
+	OpCall:          {"OpCall", []int{1}},
+	OpReturnValue:   {"OpReturnValue", []int{}},
+	OpReturn:        {"OpReturn", []int{}},
+	OpGetBuiltin:    {"OpGetBuiltin", []int{1}},
+	// 1st operand = index of OpConstant of CompiledFunction, 2nd operand = specifices number of free variables on stack to be transferred
+	OpClosure:        {"OpClosure", []int{2, 1}},
+	OpCurrentClosure: {"OpCurrentClosure", []int{}},
+	OpGetFree:        {"OpGetFree", []int{1}},
 }
 
 // looks up the definition of a given opcode byte/integer
@@ -142,6 +157,8 @@ func Make(op Opcode, operands ...int) []byte {
 	for i, o := range operands {
 		width := def.OperandWidths[i]
 		switch width {
+		case 1:
+			instruction[offset] = byte(o)
 		case 2:
 			binary.BigEndian.PutUint16(instruction[offset:], uint16(o))
 		}
@@ -158,6 +175,8 @@ func ReadOperands(def *Definition, ins Instructions) ([]int, int) {
 
 	for i, width := range def.OperandWidths {
 		switch width {
+		case 1:
+			operands[i] = int(ReadUint8(ins[offset:]))
 		case 2:
 			operands[i] = int(ReadUint16(ins[offset:]))
 		}
@@ -174,3 +193,5 @@ func ReadUint16(ins Instructions) uint16 {
 	return binary.BigEndian.Uint16(ins)
 }
 
+// returns a 1-byte from instruction slice
+func ReadUint8(ins Instructions) uint8 { return uint8(ins[0]) }
